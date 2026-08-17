@@ -10,6 +10,8 @@ import json
 from pathlib import Path
 from copy import deepcopy
 
+from app.state import _initial_state as _default_sandbox_state
+
 
 DATASET_PATH = Path(__file__).resolve().parent.parent / "dataset" / "dataset.json"
 
@@ -47,6 +49,8 @@ def _parse_setup(setup: str | dict | None) -> dict:
             value = True
         elif value.lower() == "false":
             value = False
+        elif value.lower() in ("null", "none"):
+          value = None
         else:
             try:
                 if "." in value:
@@ -116,6 +120,95 @@ def _build_initial_state(task: dict) -> dict:
             state.setdefault("metrics", {})
             state["metrics"].setdefault(service, {})
             state["metrics"][service]["memory_mb"] = setup["memory_mb"]
+
+    # ---------------------------------------------------------
+    # Process state
+    # ---------------------------------------------------------
+
+    if "pid" in setup and service:
+        pid = int(setup["pid"])
+
+        # If this task assigns `service` to a pid other than its default
+        # one, the default pid that used to hold that service must be
+        # freed explicitly: reset.py deep-merges this override onto the
+        # full default state, so simply omitting that pid from the
+        # override would leave its stale duplicate entry in place --
+        # get_processes(service=...) would then return two ambiguous
+        # matches for the same service.
+        default_processes = _default_sandbox_state()["processes"]
+        freed_pid = next(
+            (
+                existing_pid
+                for existing_pid, proc in default_processes.items()
+                if proc["service"] == service and existing_pid != pid
+            ),
+            None,
+        )
+
+        state.setdefault("processes", {})
+
+        if freed_pid is not None:
+            state["processes"][freed_pid] = {
+                "pid": freed_pid,
+                "service": None,
+                "status": "not_running",
+            }
+
+        state["processes"][pid] = {
+            "pid": pid,
+            "service": service,
+            "status": "running",
+        }
+
+    # ---------------------------------------------------------
+    # Deployment state
+    # ---------------------------------------------------------
+
+    if "current_version" in setup or "previous_version" in setup:
+        state.setdefault("deployment", {})
+
+        if "current_version" in setup:
+            state["deployment"]["current_version"] = setup["current_version"]
+
+        if "previous_version" in setup:
+            state["deployment"]["previous_version"] = setup["previous_version"]
+
+    # ---------------------------------------------------------
+    # Logs
+    # Supports setup fields such as:
+    # logs.redis=...
+    # logs.nginx=...
+    # logs.api=...
+    # ---------------------------------------------------------
+
+    for service_name in ("nginx", "redis", "api"):
+        setup_key = f"logs.{service_name}"
+
+        if setup_key in setup:
+            state.setdefault("logs", {})
+            state["logs"][service_name] = setup[setup_key]
+
+    # ---------------------------------------------------------
+    # Config
+    # Supports setup fields such as:
+    # config.log_level=debug
+    # config.traffic_profile=high
+    # config.maintenance_mode=true
+    # ---------------------------------------------------------
+
+    for setup_key, value in setup.items():
+        if setup_key.startswith("config."):
+            config_key = setup_key.split(".", 1)[1]
+
+            state.setdefault("config", {})
+            state["config"][config_key] = value
+
+    # ---------------------------------------------------------
+    # Target replicas
+    # ---------------------------------------------------------
+
+    if "target_replicas" in setup:
+        state["target_replicas"] = setup["target_replicas"]
 
     # ---------------------------------------------------------
     # Generic known state fields

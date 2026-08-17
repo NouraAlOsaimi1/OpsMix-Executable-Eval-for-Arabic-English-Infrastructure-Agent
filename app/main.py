@@ -25,15 +25,6 @@ MAX_REPLICAS = 10
 app = FastAPI(title="Tiny Infra Service")
 
 
-#def _record(tool: str, args: dict, timestamp: str | None = None) -> None:
-   # state["history"].append(
-       # {
-           # "tool": tool,
-           # "args": args,
-            #"timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
-            #"state_before": state_before,
-       # }
-    #)
 def _record(
     tool: str,
     args: dict,
@@ -242,6 +233,30 @@ def get_logs(service: str, limit: int | None = None):
         "service": service,
         "logs": logs,
     }
+
+
+# get_processes(service) -- List known processes and their PIDs, optionally
+# filtered by service. Read-only; the only tool that exposes pid<->service
+# evidence, so kill_process's target PID never has to be guessed.
+@app.get("/get_processes")
+def get_processes(service: str | None = None):
+    if service is not None:
+        service = service.strip().lower()
+        if service not in SERVICE_NAMES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Service '{service}' is not supported.",
+            )
+
+    state_before = copy.deepcopy(state)
+
+    processes = sorted(state["processes"].values(), key=lambda p: p["pid"])
+    if service is not None:
+        processes = [p for p in processes if p.get("service") == service]
+
+    _record("get_processes", {"service": service}, state_before=state_before)
+
+    return {"processes": processes}
 
 
 # kill_process(pid) -- Kill a running process by PID.
